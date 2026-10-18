@@ -1,0 +1,96 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Works whether the repo holds the project files directly or just the project .zip.
+      # If no settings.gradle.kts is found, the first .zip in the repo is unpacked and used.
+      - name: Locate project (unzip if needed)
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+          settings=$(find . -maxdepth 3 -name settings.gradle.kts -not -path './.git/*' | head -n1 || true)
+          if [ -z "$settings" ]; then
+            zip_file=$(find . -maxdepth 2 -name '*.zip' -not -path './.git/*' | head -n1 || true)
+            if [ -z "$zip_file" ]; then
+              echo "::error::No Gradle project and no .zip file found in the repository"
+              exit 1
+            fi
+            echo "Unpacking $zip_file"
+            mkdir -p "$RUNNER_TEMP/project"
+            unzip -q "$zip_file" -d "$RUNNER_TEMP/project"
+            settings=$(find "$RUNNER_TEMP/project" -maxdepth 3 -name settings.gradle.kts | head -n1 || true)
+            if [ -z "$settings" ]; then
+              echo "::error::settings.gradle.kts not found inside $zip_file"
+              exit 1
+            fi
+          fi
+          project_dir=$(cd "$(dirname "$settings")" && pwd)
+          echo "Project directory: $project_dir"
+          echo "dir=$project_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      # The design uses the Outfit font (OFL license). The app falls back to the system font
+      # if the file is missing, so a failed download never breaks the build.
+      - name: Fetch Outfit font (optional)
+        continue-on-error: true
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: |
+          font=app/src/main/res/font/outfit.ttf
+          if [ ! -f "$font" ]; then
+            mkdir -p "$(dirname "$font")"
+            curl -fsSL "https://github.com/google/fonts/raw/main/ofl/outfit/Outfit%5Bwght%5D.ttf" -o "$font" || rm -f "$font"
+          fi
+
+      - name: Run unit tests and build debug APK
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: |
+          if [ -f ./gradlew ]; then
+            sh ./gradlew --no-daemon testDebugUnitTest assembleDebug
+          else
+            gradle --no-daemon testDebugUnitTest assembleDebug
+          fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: calculator-debug-apk
+          path: ${{ steps.locate.outputs.dir }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: ${{ steps.locate.outputs.dir }}/app/build/reports/tests/
+          if-no-files-found: ignore
