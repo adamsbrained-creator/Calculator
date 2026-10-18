@@ -51,8 +51,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # GitHub's Ubuntu runners already include the Android SDK; just make sure licenses are
+      # accepted so Gradle can download any missing platform/build-tools. Non-fatal on purpose.
+      - name: Accept Android SDK licenses
+        continue-on-error: true
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
